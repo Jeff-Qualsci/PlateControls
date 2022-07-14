@@ -14,51 +14,54 @@ Zrob <- function(ctrlmin, ctrlmax) {
 }
 
 # simulate plate control wells 
-make_plate <- function(z, nwells, platenum) {
+sim_plate <- function(z, nwells, platenum) {
   True_Z <- z
   PlateNum <- platenum
   CtrlN <- nwells
   MaxCtrl <- rnorm(nwells, 1, (1-z) / 6)
   MinCtrl <- rnorm(nwells, 0, (1-z) / 6)
-  tibble(True_Z, PlateNum, CtrlN, MaxCtrl, MinCtrl)
+  Std_Z <- Zstd(MinCtrl, MaxCtrl)
+  Rob_Z <- Zrob(MinCtrl,MaxCtrl)
+  tibble(True_Z, PlateNum, CtrlN, Std_Z, Rob_Z)
 }
-
 
 TrueZ <- c(.4, .6, .8)
 Plates <- seq.int(1, 1000, 1)
-CtrlWell <- seq.int(4, 64, 2)
+CtrlWell <- seq.int(4, 64, 4)
+nplates <- length(TrueZ) * length(Plates) * length(CtrlWell)
 
-set.seed(903)
-
-PlateCtrls <- tibble()
+set.seed(90362)
+PlateZs <- vector('list', length = nplates)
+Plate <- 1
 
 for (i in seq_along(TrueZ)) {
   for (j in seq_along(CtrlWell)) {
     for (k in seq_along(Plates)) {
-      newplate <- make_plate(TrueZ[i], CtrlWell[j], Plates[k])
-      PlateCtrls <- bind_rows(PlateCtrls, newplate)
+      PlateZs[[Plate]] <- sim_plate(TrueZ[i], CtrlWell[j], Plates[k])
+      Plate <- Plate + 1
     }
   }
 }
 
-saveRDS(PlateCtrls, file = 'PlateCtrls.RDS')
+PlateZs <- bind_rows(PlateZs) %>% 
+  mutate(True_Z = as_factor(True_Z))
 
-PlateZs <- PlateCtrls %>% 
-  group_by(True_Z, CtrlN, PlateNum) %>% 
-  summarise(StdZ = Zstd(MinCtrl, MaxCtrl),
-            RobZ = Zrob(MinCtrl, MaxCtrl),
-            MaxMean = mean(MaxCtrl),
-            MaxMed = median(MaxCtrl),
-            MaxSD = sd(MaxCtrl),
-            MaxMAD = mad(MaxCtrl),
-            MinMean = mean(MinCtrl),
-            MinMed = median(MinCtrl),
-            MinSD = sd(MinCtrl),
-            MinMad = mad(MinCtrl)
-          ) %>%
-  ungroup() 
+Zsummary <- PlateZs %>% 
+  pivot_longer(cols = c(Std_Z, Rob_Z), names_to = 'StatMethod', values_to = 'Z') %>% 
+  mutate(StatMethod = if_else(StatMethod == 'Std_Z', 'Standard', 'Robust')) %>% 
+  group_by(True_Z, CtrlN, StatMethod) %>% 
+  summarise(Zavg = mean(Z),
+            StdDev = sd(Z),
+            MAD = mad(Z),
+            UCL = Zavg + 2 * StdDev,
+            LCL = Zavg - 2 * StdDev,
+            rUCL = quantile(Z, 0.995),
+            rLCL = quantile(Z, 0.005))%>% 
+  ungroup()
 
-saveRDS(PlateZs, file = 'PlateZs.RDS')
+ggplot(Zsummary, aes(x = CtrlN, y = Zavg, color = True_Z)) +
+  geom_smooth(se = FALSE) + 
+  geom_ribbon(aes(ymin = rLCL, ymax = rUCL, alpha = 0.2, fill = True_Z )) +
+  theme_minimal() +
+  facet_wrap(~ StatMethod)
 
-PlateCtrls <- readRDS('PlateCtrls.RDS')
-PlateZs <- readRDS('PlateZs.RDS')
